@@ -1,0 +1,19 @@
+# Build output
+build/
+*.apk
+*.aab
+*.dex
+*.class
+*.spv
+
+# Signing keys - never commit these
+*.keystore
+*.jks
+
+# Editors and OS
+.idea/
+.vs/
+.vscode/
+*.iml
+Thumbs.db
+.DS_Store
