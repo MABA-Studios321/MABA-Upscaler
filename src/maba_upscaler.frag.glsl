@@ -1,5 +1,5 @@
 //==============================================================================================
-// MABA Upscaler 1.4 - single-pass spatial upscaler for low-end mobile GPUs
+// MABA Upscaler 2 - single-pass spatial upscaler for low-end mobile GPUs
 //
 // Copyright 2026 MABA Studios (owner: Muhammad Affan Bin Adnan)
 // SPDX-License-Identifier: Apache-2.0
@@ -64,10 +64,21 @@
 #define MABA_DARK_HI 0.12
 #endif
 
+#ifndef MABA_HIGHP
+#define MABA_HIGHP 0
+#endif
+#ifndef MABA_VULKAN
+#define MABA_VULKAN 0
+#endif
+
+#if MABA_HIGHP
+precision highp float;
+#else
 precision mediump float;
+#endif
 precision mediump int;
 
-#ifdef MABA_VULKAN
+#if MABA_VULKAN
 layout(set = 0, binding = 0) uniform sampler2D uMabaInput;
 layout(push_constant) uniform MabaConstants
 {
@@ -123,11 +134,11 @@ float MabaBlockDelta(float f, float g, float j, float k, vec2 pp)
          + (f - g - j + k) * (MabaTwistWeight(p, MabaDiagonal(f, g, j, k)) - pp.x * pp.y);
 }
 
-// Position of this output pixel in input texel space, relative to texel centres. Limited so that
-// the 2x2 block never reaches past the last row or column of the image region.
+// Position of this output pixel in input texel space, relative to texel centres. Clamped at both
+// ends so the 2x2 block never reaches past the first or last row/column of the image region.
 highp vec2 MabaPos()
 {
-    return min(vMabaUV * uMabaInputSize.xy - 0.5, uMabaInputSize.xy - 1.001);
+    return clamp(vMabaUV * uMabaInputSize.xy - 0.5, vec2(0.0), uMabaInputSize.xy - 1.001);
 }
 
 // Bilinear colour of the image region at this output pixel, without bleeding past its edge.
@@ -232,9 +243,10 @@ void main()
     float blockDelta = MabaBlockDelta(f, g, j, k, pp);
     float contrast = mx - mn;
 
-    // Low-contrast pixels need nothing more. Neither do pixels within two texels of the right or
-    // bottom edge, where the 12-tap footprint would leave the image region.
-    if (contrast < MABA_EDGE_LO || any(greaterThan(fp + 2.5, uMabaInputSize.xy)))
+    // Low-contrast pixels need nothing more. Neither do pixels within one texel of the left/top
+    // or two texels of the right/bottom edge, where the 12-tap footprint would leave the region.
+    if (contrast < MABA_EDGE_LO || any(lessThan(fp, vec2(1.0)))
+        || any(greaterThan(fp + 2.5, uMabaInputSize.xy)))
     {
         oMabaColor = vec4(clamp(color + blockDelta, 0.0, 1.0), 1.0);
         return;

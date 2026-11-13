@@ -19,6 +19,11 @@ $jdk = if ($env:JAVA_HOME -and (Test-Path "$env:JAVA_HOME\bin\javac.exe")) { $en
 if (-not (Test-Path "$sdk\build-tools")) { throw "Android SDK not found at $sdk (set ANDROID_SDK_ROOT)" }
 if (-not (Test-Path "$jdk\bin\javac.exe")) { throw "JDK not found at $jdk (set JAVA_HOME)" }
 
+# NDK: newest installed, for the JNI bridge (real C controller + GPU timer queries).
+$ndk = (Get-ChildItem "$sdk\ndk" -Directory | Sort-Object { [version]$_.Name } | Select-Object -Last 1).FullName
+$clang = "$ndk\toolchains\llvm\prebuilt\windows-x86_64\bin\clang.exe"
+if (-not (Test-Path $clang)) { throw "NDK clang not found at $clang" }
+
 # Newest installed build-tools and numbered platform.
 $bt  = (Get-ChildItem "$sdk\build-tools" -Directory | Sort-Object { [version]($_.Name -replace '[^\d\.].*$','') } | Select-Object -Last 1).FullName
 $jar = (Get-ChildItem "$sdk\platforms" -Directory | Where-Object { $_.Name -match '^android-\d+$' } |
@@ -31,12 +36,21 @@ function Check($what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LA
 if (Test-Path $out) { Remove-Item -Recurse -Force $out }
 New-Item -ItemType Directory -Force "$out\assets", "$out\classes", "$out\dex" | Out-Null
 
-# Assets: the upscaler itself and the test shaders.
-Copy-Item "$root\src\maba_upscaler.frag.glsl", "$root\src\maba_upscaler.vert.glsl" "$out\assets"
+# Assets: the upscalers themselves and the test shaders.
+Copy-Item "$root\src\maba_upscaler.frag.glsl", "$root\src\maba_upscaler.vert.glsl", "$root\src\maba_temporal.frag.glsl" "$out\assets"
 Copy-Item "$here\shaders\*.glsl" "$out\assets"
 
 & "$bt\aapt2.exe" link -o "$out\unsigned.apk" -I $jar --manifest "$here\AndroidManifest.xml" -A "$out\assets"
 Check "aapt2"
+
+# Native JNI bridge for arm64-v8a and armeabi-v7a.
+foreach ($abi in @("arm64-v8a", "armeabi-v7a")) {
+    $target = if ($abi -eq "arm64-v8a") { "aarch64-linux-android26" } else { "armv7a-linux-androideabi26" }
+    New-Item -ItemType Directory -Force "$out\lib\$abi" | Out-Null
+    & $clang --target=$target -O2 -shared -Wall -I"$here\jni" `
+        -o "$out\lib\$abi\libmaba_jni.so" "$here\jni\maba_jni.c" -lGLESv3 -llog
+    Check "clang $abi"
+}
 
 $sources = Get-ChildItem -Recurse "$here\src" -Filter *.java | ForEach-Object { $_.FullName }
 & "$jdk\bin\javac.exe" -nowarn -source 8 -target 8 -cp $jar -d "$out\classes" $sources
@@ -51,7 +65,12 @@ Push-Location "$out\dex"
 Pop-Location
 Check "aapt add"
 
-& "$bt\zipalign.exe" -f 4 "$out\unsigned.apk" "$out\aligned.apk"
+Push-Location $out
+& "$bt\aapt.exe" add "$out\unsigned.apk" lib/arm64-v8a/libmaba_jni.so lib/armeabi-v7a/libmaba_jni.so | Out-Null
+Pop-Location
+Check "aapt add libs"
+
+& "$bt\zipalign.exe" -f -p 4 "$out\unsigned.apk" "$out\aligned.apk"
 Check "zipalign"
 
 & "$jdk\bin\java.exe" -jar "$bt\lib\apksigner.jar" sign --ks $keystore `

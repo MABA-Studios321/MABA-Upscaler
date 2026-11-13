@@ -1,0 +1,13 @@
+{
+  "name": "com.maba.upscaler",
+  "version": "2.0.0",
+  "displayName": "MABA Upscaler",
+  "description": "Single-pass spatial upscaler for low-end mobile GPUs, with the optional MABA-Upscaler 2 (Temporal) resolve tier. Render lower, upscale sharper, hold your frame rate.",
+  "unity": "2021.3",
+  "dependencies": {},
+  "keywords": [ "upscaler", "mobile", "performance", "resolution", "temporal" ],
+  "author": {
+    "name": "MABA Studios"
+  },
+  "license": "Apache-2.0"
+}

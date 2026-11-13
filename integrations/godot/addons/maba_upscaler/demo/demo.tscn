@@ -1,0 +1,57 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://addons/maba_upscaler/demo/demo.gd" id="1"]
+[ext_resource type="Script" path="res://addons/maba_upscaler/maba_upscaler.gd" id="2"]
+
+[sub_resource type="Shader" id="Shader_stripes"]
+code = "shader_type spatial;
+render_mode cull_back, diffuse_burley, specular_schlick_ggx;
+
+void fragment() {
+	float stripe = step(0.5, fract(UV.x * 60.0));
+	ALBEDO = mix(vec3(0.95, 0.95, 0.97), vec3(0.08, 0.09, 0.12), stripe);
+	METALLIC = 0.0;
+	ROUGHNESS = 0.35;
+}
+"
+
+[sub_resource type="ShaderMaterial" id="Mat_stripes"]
+render_priority = 0
+shader = SubResource("Shader_stripes")
+
+[sub_resource type="TorusMesh" id="Mesh_knot"]
+inner_radius = 0.55
+outer_radius = 1.0
+rings = 160
+ring_segments = 48
+
+[sub_resource type="Environment" id="Env_demo"]
+background_mode = 1
+background_color = Color(0.04, 0.04, 0.07, 1)
+tonemap_mode = 0
+glow_enabled = false
+
+[node name="Demo" type="Node3D"]
+script = ExtResource("1")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Env_demo")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866, -0.354, 0.354, 0, 0.707, 0.707, -0.5, -0.612, 0.612, 0, 3, 3)
+shadow_enabled = true
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 4.5)
+current = true
+
+[node name="Knot" type="MeshInstance3D" parent="."]
+mesh = SubResource("Mesh_knot")
+surface_material_override/0 = SubResource("Mat_stripes")
+
+[node name="MabaUpscaler" type="Node" parent="."]
+script = ExtResource("2")
+mode = 0
+sharpness = 0.5
+target_fps = 60.0
+convert_color_space = true

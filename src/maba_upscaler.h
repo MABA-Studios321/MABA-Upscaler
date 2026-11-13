@@ -1,5 +1,5 @@
 /*==============================================================================================
-  MABA Upscaler 1.4 - quality modes and dynamic controller (C99 / C++, header only)
+  MABA Upscaler 2 - quality modes and dynamic controller (C99 / C++, header only)
 
   Copyright 2026 MABA Studios (owner: Muhammad Affan Bin Adnan)
   SPDX-License-Identifier: Apache-2.0
@@ -7,18 +7,31 @@
   This header has no graphics-API dependency. It decides, each frame, what resolution to render
   the 3D scene at and which build of maba_upscaler.frag.glsl to upscale it with.
 
-  QUALITY LEVELS (lowest to highest)
-      level 0   0.50 scale, fast shader       "Performance"
-      level 1   0.59 scale, fast shader       (used by Dynamic only)
-      level 2   0.59 scale, quality shader    "Balanced"
-      level 3   0.67 scale, quality shader    "Quality"
-      level 4   0.77 scale, quality shader    "Ultra Quality"
+  RUNGS (continuous resolution ladder, lowest to highest)
+      rung 0..9    scale 0.50..0.59 in 1% steps, fast shader
+      rung 10      scale 0.59, quality shader          "Balanced"
+      rung 11..28  scale 0.60..0.77 in 1% steps, quality shader
+  The classic presets are anchors on this ladder:
+      Performance = rung 0 (0.50, fast), Balanced = rung 10 (0.59, quality),
+      Quality = rung 18 (0.67, quality), Ultra Quality = rung 28 (0.77, quality).
   "fast shader" is the default build; "quality shader" is the MABA_QUALITY 1 build. On a device
-  without textureGather (OpenGL ES 3.0) use the MABA_GATHER 0 build for every level.
+  without textureGather (OpenGL ES 3.0) use the MABA_GATHER 0 build for every rung.
 
   MODES
-      MABA_MODE_DYNAMIC (default)  moves between the levels to hold a target frame time.
-      MABA_MODE_ULTRA_QUALITY / QUALITY / BALANCED / PERFORMANCE  stay on one level.
+      MABA_MODE_DYNAMIC (default)  moves along the rungs to hold a target frame time.
+      MABA_MODE_ULTRA_QUALITY / QUALITY / BALANCED / PERFORMANCE  stay on one anchor rung.
+
+  TIMING
+      MabaBeginFrame(u, lastFrameMs, ...)     present-to-present frame time. Simple, but with
+                                              vsync on it cannot see GPU headroom: a frame that
+                                              finishes early still reports 16.7 ms at 60 Hz.
+      MabaBeginFrameGpu(u, gpuMs, ...)        GPU-only time from a timer query (recommended;
+                                              EXT_disjoint_timer_query on GLES, vkCmdWriteTimestamp
+                                              on Vulkan). Steps up whenever the GPU is comfortably
+                                              under budget, even at the vsync cap. Some drivers
+                                              latch timestamps once per frame (begin == end); such
+                                              a timer cannot measure GPU time - detect it and fall
+                                              back to a glFinish-timed probe frame.
 
   USAGE
       MabaUpscaler maba;
@@ -29,14 +42,15 @@
       MabaMaxRenderSize(outW, outH, &texW, &texH);
 
       // Every frame:
-      MabaFrame f = MabaBeginFrame(&maba, lastFrameMs, outW, outH);
+      MabaFrame f = MabaBeginFrameGpu(&maba, lastGpuMs, outW, outH);
       //   render the scene into viewport (0, 0, f.renderWidth, f.renderHeight) of that target
       //   bind the program for f.qualityShader (0 = fast build, 1 = MABA_QUALITY build)
       float size[4], params[4];
       MabaUniforms(&f, texW, texH, 0.5f, size, params);
       //   set uMabaInputSize = size, uMabaParams = params, draw 3 vertices, then draw the UI
 
-  lastFrameMs is the time the previous frame took, in milliseconds (present to present).
+  Thermal / battery: call MabaSetTargetFps(&maba, 30.0f) when the device throttles; the
+  controller keeps its rung and re-settles against the new budget.
 ==============================================================================================*/
 #ifndef MABA_UPSCALER_H
 #define MABA_UPSCALER_H
@@ -45,7 +59,9 @@
 extern "C" {
 #endif
 
-#define MABA_LEVEL_COUNT 5
+#define MABA_RUNG_COUNT 29
+#define MABA_RUNG_MIN 0
+#define MABA_RUNG_MAX (MABA_RUNG_COUNT - 1)
 
 typedef enum MabaMode
 {
@@ -56,36 +72,32 @@ typedef enum MabaMode
     MABA_MODE_PERFORMANCE
 } MabaMode;
 
-typedef struct MabaLevel
+/* Rung -> render scale and shader build. */
+static inline float MabaRungScale(int rung)
 {
-    float scale;          /* render size / output size, per axis */
-    int   qualityShader;  /* 0 = default build, 1 = MABA_QUALITY build */
-} MabaLevel;
+    return (float)((rung <= 9) ? (50 + rung) : (49 + rung)) * 0.01f;
+}
 
-static const MabaLevel kMabaLevels[MABA_LEVEL_COUNT] =
+static inline int MabaRungQuality(int rung)
 {
-    { 0.50f, 0 },
-    { 0.59f, 0 },
-    { 0.59f, 1 },
-    { 0.67f, 1 },
-    { 0.77f, 1 }
-};
+    return rung >= 10;
+}
 
 typedef struct MabaUpscaler
 {
     MabaMode mode;
     float targetMs;     /* frame time to hold in Dynamic mode */
-    int   level;        /* current index into kMabaLevels */
+    int   rung;         /* current position on the ladder */
     float avgMs;        /* smoothed frame time */
     int   overFrames;   /* consecutive frames over budget */
     int   goodFrames;   /* consecutive frames within budget */
-    int   upWait;       /* good frames required before trying a higher level */
+    int   upWait;       /* good frames required before trying a higher rung */
     int   probing;      /* 1 while a recent step up is still being proven */
 } MabaUpscaler;
 
 typedef struct MabaFrame
 {
-    int   level;
+    int   rung;
     int   renderWidth;
     int   renderHeight;
     int   qualityShader;
@@ -93,29 +105,30 @@ typedef struct MabaFrame
 } MabaFrame;
 
 /* Tuning of the dynamic controller. */
-#define MABA_DYN_START_LEVEL   2      /* Balanced */
+#define MABA_DYN_START_RUNG    10     /* Balanced */
 #define MABA_DYN_OVER_RATIO    1.02f  /* smoothed frame time above target * this = over budget */
 #define MABA_DYN_DOWN_FRAMES   20     /* over-budget frames before stepping down */
 #define MABA_DYN_UP_FRAMES     180    /* good frames before the first attempt to step up */
 #define MABA_DYN_UP_FRAMES_MAX 3600   /* cap on the back-off after failed attempts */
 #define MABA_DYN_PROVEN_FRAMES 300    /* good frames after a step up that halve the back-off */
 
-static int MabaModeLevel(MabaMode mode)
+static inline int MabaModeRung(MabaMode mode)
 {
     switch (mode)
     {
-        case MABA_MODE_ULTRA_QUALITY: return 4;
-        case MABA_MODE_QUALITY:       return 3;
-        case MABA_MODE_BALANCED:      return 2;
+        case MABA_MODE_ULTRA_QUALITY: return 28;
+        case MABA_MODE_QUALITY:       return 18;
+        case MABA_MODE_BALANCED:      return 10;
         case MABA_MODE_PERFORMANCE:   return 0;
-        default:                      return MABA_DYN_START_LEVEL;
+        case MABA_MODE_DYNAMIC:       return MABA_DYN_START_RUNG;
+        default:                      return MABA_DYN_START_RUNG;
     }
 }
 
-static void MabaSetMode(MabaUpscaler* u, MabaMode mode)
+static inline void MabaSetMode(MabaUpscaler* u, MabaMode mode)
 {
     u->mode = mode;
-    u->level = MabaModeLevel(mode);
+    u->rung = MabaModeRung(mode);
     u->avgMs = 0.0f;
     u->overFrames = 0;
     u->goodFrames = 0;
@@ -123,23 +136,46 @@ static void MabaSetMode(MabaUpscaler* u, MabaMode mode)
     u->probing = 0;
 }
 
-static void MabaInit(MabaUpscaler* u, MabaMode mode, float targetFps)
+static inline void MabaInit(MabaUpscaler* u, MabaMode mode, float targetFps)
 {
     u->targetMs = 1000.0f / (targetFps > 1.0f ? targetFps : 60.0f);
     MabaSetMode(u, mode);
 }
 
-/* Size to allocate the scene render target at, so every level fits without reallocation. */
-static void MabaMaxRenderSize(int outW, int outH, int* texW, int* texH)
+/* Change the frame-rate budget at runtime (thermal throttling, battery saver, user setting).
+   Keeps the current rung; the controller re-settles against the new budget. */
+static inline void MabaSetTargetFps(MabaUpscaler* u, float targetFps)
 {
-    float s = kMabaLevels[MABA_LEVEL_COUNT - 1].scale;
+    u->targetMs = 1000.0f / (targetFps > 1.0f ? targetFps : 60.0f);
+    u->avgMs = 0.0f;
+    u->overFrames = 0;
+    u->goodFrames = 0;
+    u->probing = 0;
+}
+
+/* Seed the ladder from a startup calibration instead of always starting at Balanced. */
+static inline void MabaSeedRung(MabaUpscaler* u, int rung)
+{
+    if (rung < MABA_RUNG_MIN) rung = MABA_RUNG_MIN;
+    if (rung > MABA_RUNG_MAX) rung = MABA_RUNG_MAX;
+    u->rung = rung;
+    u->avgMs = 0.0f;
+    u->overFrames = 0;
+    u->goodFrames = 0;
+    u->probing = 0;
+}
+
+/* Size to allocate the scene render target at, so every rung fits without reallocation. */
+static inline void MabaMaxRenderSize(int outW, int outH, int* texW, int* texH)
+{
+    float s = MabaRungScale(MABA_RUNG_MAX);
     *texW = (int)((float)outW * s + 0.5f);
     *texH = (int)((float)outH * s + 0.5f);
 }
 
 /* Dynamic mode: step down quickly when frames run over budget, step up cautiously, and back off
    exponentially when a step up does not hold, so the game does not oscillate. */
-static void MabaUpdateDynamic(MabaUpscaler* u, float frameMs)
+static inline void MabaUpdateDynamic(MabaUpscaler* u, float frameMs)
 {
     int over;
     if (frameMs <= 0.0f || frameMs > 1000.0f) return;   /* ignore pauses and loading hitches */
@@ -149,9 +185,9 @@ static void MabaUpdateDynamic(MabaUpscaler* u, float frameMs)
     if (over)
     {
         u->goodFrames = 0;
-        if (++u->overFrames >= MABA_DYN_DOWN_FRAMES && u->level > 0)
+        if (++u->overFrames >= MABA_DYN_DOWN_FRAMES && u->rung > MABA_RUNG_MIN)
         {
-            u->level--;
+            u->rung--;
             u->overFrames = 0;
             u->avgMs = u->targetMs;
             if (u->probing)
@@ -172,23 +208,21 @@ static void MabaUpdateDynamic(MabaUpscaler* u, float frameMs)
             u->upWait /= 2;   /* relax the back-off gradually, not all at once */
             if (u->upWait < MABA_DYN_UP_FRAMES) u->upWait = MABA_DYN_UP_FRAMES;
         }
-        if (!u->probing && u->goodFrames >= u->upWait && u->level < MABA_LEVEL_COUNT - 1)
+        if (!u->probing && u->goodFrames >= u->upWait && u->rung < MABA_RUNG_MAX)
         {
-            u->level++;
+            u->rung++;
             u->goodFrames = 0;
             u->probing = 1;
         }
     }
 }
 
-/* Call once per frame, before rendering the scene. */
-static MabaFrame MabaBeginFrame(MabaUpscaler* u, float lastFrameMs, int outW, int outH)
+static inline MabaFrame MabaMakeFrame(const MabaUpscaler* u, int outW, int outH)
 {
     MabaFrame f;
-    if (u->mode == MABA_MODE_DYNAMIC) MabaUpdateDynamic(u, lastFrameMs);
-    f.level = u->level;
-    f.scale = kMabaLevels[u->level].scale;
-    f.qualityShader = kMabaLevels[u->level].qualityShader;
+    f.rung = u->rung;
+    f.scale = MabaRungScale(u->rung);
+    f.qualityShader = MabaRungQuality(u->rung);
     f.renderWidth = (int)((float)outW * f.scale + 0.5f);
     f.renderHeight = (int)((float)outH * f.scale + 0.5f);
     if (f.renderWidth < 2) f.renderWidth = 2;
@@ -196,10 +230,25 @@ static MabaFrame MabaBeginFrame(MabaUpscaler* u, float lastFrameMs, int outW, in
     return f;
 }
 
+/* Call once per frame with the previous present-to-present frame time. */
+static inline MabaFrame MabaBeginFrame(MabaUpscaler* u, float lastFrameMs, int outW, int outH)
+{
+    if (u->mode == MABA_MODE_DYNAMIC) MabaUpdateDynamic(u, lastFrameMs);
+    return MabaMakeFrame(u, outW, outH);
+}
+
+/* Call once per frame with the previous frame's GPU-only time (timer query). Preferred: it sees
+   headroom even when vsync caps the present-to-present time. */
+static inline MabaFrame MabaBeginFrameGpu(MabaUpscaler* u, float gpuMs, int outW, int outH)
+{
+    if (u->mode == MABA_MODE_DYNAMIC) MabaUpdateDynamic(u, gpuMs);
+    return MabaMakeFrame(u, outW, outH);
+}
+
 /* Values for the shader's uMabaInputSize and uMabaParams. texW/texH is the allocated size of the
    scene render target; sharpness is 0..1. */
-static void MabaUniforms(const MabaFrame* f, int texW, int texH, float sharpness,
-                         float inputSize[4], float params[4])
+static inline void MabaUniforms(const MabaFrame* f, int texW, int texH, float sharpness,
+                                float inputSize[4], float params[4])
 {
     inputSize[0] = (float)f->renderWidth;
     inputSize[1] = (float)f->renderHeight;

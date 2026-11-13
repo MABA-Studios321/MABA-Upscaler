@@ -1,5 +1,5 @@
 //==============================================================================================
-// MABA Upscaler 1.4 - full-screen triangle vertex shader
+// MABA Upscaler 2 - full-screen triangle vertex shader
 //
 // Copyright 2026 MABA Studios (owner: Muhammad Affan Bin Adnan)
 // SPDX-License-Identifier: Apache-2.0
@@ -9,7 +9,11 @@
 // or "#version 450\n#define MABA_VULKAN 1\n").
 //==============================================================================================
 
-#ifdef MABA_VULKAN
+#ifndef MABA_VULKAN
+#define MABA_VULKAN 0
+#endif
+
+#if MABA_VULKAN
 layout(location = 0) out highp vec2 vMabaUV;
 #define MABA_VERTEX_ID gl_VertexIndex
 #else

@@ -6,6 +6,17 @@ build/
 *.class
 *.spv
 
+# Host test artifacts (regenerate with the scripts in test/)
+test/native/*.exe
+test/native/out/
+test/native/trace_*.txt
+test/native/dotnet_err.txt
+test/native/gpu/
+test/native/golden/
+test/native/parity_cs/bin/
+test/native/parity_cs/obj/
+*.ppm
+
 # Signing keys - never commit these
 *.keystore
 *.jks
