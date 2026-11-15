@@ -26,6 +26,7 @@ Shader "MABA/Temporal"
             float4 _TParams;
             float4 _Texel;
             float4 _Region;
+            float4 _Jitter;
 
             float4 Vert(uint id : SV_VertexID) : SV_Position
             {
@@ -37,7 +38,7 @@ Shader "MABA/Temporal"
             {
                 return MabaTemporalResolve(_MabaInput, _History, _Depth, _PrevDepth,
                     sampler_LinearClamp, sampler_PointClamp, pos.xy, _InvVP, _PrevVP,
-                    _TParams, _Texel.xy, _Region.xy);
+                    _TParams, _Texel.xy, _Region.xy, _Jitter.xy);
             }
             ENDHLSL
         }

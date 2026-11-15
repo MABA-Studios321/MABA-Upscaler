@@ -1,9 +1,9 @@
 {
 	"FileVersion": 3,
 	"Version": 2,
-	"VersionName": "2.0.0",
-	"FriendlyName": "MABA Upscaler",
-	"Description": "Single-pass spatial upscaler for low-end mobile GPUs. Render lower, upscale sharper, hold your frame rate.",
+	"VersionName": "2.0.0-pre-alpha",
+	"FriendlyName": "MABA Upscaler (pre-alpha)",
+	"Description": "PRE-ALPHA: compiles on UE 5.6 and 5.8, never run in a game. Single-pass spatial upscaler, cheap enough for low-end mobile GPUs and not tied to a hardware class, with an optional temporal tier. Render lower, upscale sharper, hold your frame rate.",
 	"Category": "Rendering",
 	"CreatedBy": "MABA Studios",
 	"CreatedByURL": "",
@@ -12,7 +12,7 @@
 	"SupportURL": "",
 	"CanContainContent": false,
 	"IsBetaVersion": false,
-	"IsExperimentalVersion": false,
+	"IsExperimentalVersion": true,
 	"EnabledByDefault": true,
 	"Modules": [
 		{

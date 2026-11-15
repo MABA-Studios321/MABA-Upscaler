@@ -9,7 +9,7 @@ public class MabaUpscaler : ModuleRules
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
 		PublicDependencyModuleNames.AddRange(new string[] {
-			"Core", "CoreUObject", "Engine", "RenderCore", "RHI", "Renderer", "Projects"
+			"Core", "CoreUObject", "Engine", "RenderCore", "RHI", "Renderer", "Projects", "DeveloperSettings"
 		});
 
 		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "Private"));

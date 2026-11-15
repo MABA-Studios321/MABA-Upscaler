@@ -28,6 +28,7 @@ namespace Maba
         public static float Halton(int index, int baseNum)
         {
             float f = 1f, r = 0f;
+            if (baseNum < 2) return 0f;   // as in maba_temporal.h: base 0 / 1 would never terminate
             while (index > 0)
             {
                 f /= baseNum;

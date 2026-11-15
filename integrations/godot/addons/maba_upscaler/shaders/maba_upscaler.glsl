@@ -15,6 +15,14 @@
 // Vulkan always has textureGather, so MABA_GATHER is fixed to 1 and the GLES 3.0 fallback
 // path from the reference is not needed here.
 
+// Godot imports this file as an RDShaderFile (so it is baked into exported games): the two builds
+// are named versions, selected with RDShaderFile.get_spirv(version); the defines land where the
+// VERSION_DEFINES token sits in the fragment stage. test/compile_shaders.ps1 substitutes the same text.
+#[versions]
+
+fast = "#define MABA_QUALITY 0";
+quality = "#define MABA_QUALITY 1";
+
 #[vertex]
 #version 450
 
@@ -29,6 +37,10 @@ void main()
 
 #[fragment]
 #version 450
+
+// Godot replaces this token with the selected version's defines (see #[versions] above). Without it
+// the defines are silently dropped.
+VERSION_DEFINES
 
 precision mediump float;
 precision mediump int;
@@ -240,7 +252,7 @@ void main()
     float edgeG = clamp(aC / aW, mn, mx);
 
     float bilG = mix(mix(f, g, pp.x), mix(j, k, pp.x), pp.y);
-    float gain = 1.0 + uMabaParams.x * smoothstep(MABA_DARK_LO, MABA_DARK_HI, bilG);
+    float gain = 1.0 + 0.5 * uMabaParams.x * smoothstep(MABA_DARK_LO, MABA_DARK_HI, bilG);   // MABA_QUALITY_GAIN 0.5
     float outG = clamp(bilG + (edgeG - bilG) * gain, mn, mx);
 
     float blend = clamp((contrast - MABA_EDGE_LO) * (1.0 / (MABA_EDGE_HI - MABA_EDGE_LO)), 0.0, 1.0);

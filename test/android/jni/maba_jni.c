@@ -13,6 +13,7 @@
 #include <GLES3/gl31.h>
 #include <GLES2/gl2ext.h>
 #include "../../../src/maba_upscaler.h"
+#include "../../../src/maba_framegen.h"
 
 #define JNI(name) Java_com_maba_upscalertest_MabaNative_##name
 
@@ -31,14 +32,27 @@ JNIEXPORT void JNICALL JNI(ctrlDestroy)(JNIEnv* env, jclass cls, jlong p)
     free((void*)(intptr_t)p);
 }
 
-JNIEXPORT void JNICALL JNI(ctrlSetMode)(JNIEnv* env, jclass cls, jlong p, jint mode)
+/* Returns the rung the mode starts at (Dynamic starts inside the configured range). */
+JNIEXPORT jint JNICALL JNI(ctrlSetMode)(JNIEnv* env, jclass cls, jlong p, jint mode)
 {
-    if (p) MabaSetMode((MabaUpscaler*)(intptr_t)p, (MabaMode)mode);
+    MabaUpscaler* u = (MabaUpscaler*)(intptr_t)p;
+    if (!u) return MABA_DYN_START_RUNG;
+    MabaSetMode(u, (MabaMode)mode);
+    return u->rung;
 }
 
 JNIEXPORT void JNICALL JNI(ctrlSetTargetFps)(JNIEnv* env, jclass cls, jlong p, jfloat fps)
 {
     if (p) MabaSetTargetFps((MabaUpscaler*)(intptr_t)p, fps);
+}
+
+/* Restricts Dynamic mode to [minScale, maxScale]; returns the rung after clamping. */
+JNIEXPORT jint JNICALL JNI(ctrlSetScaleRange)(JNIEnv* env, jclass cls, jlong p, jfloat minScale, jfloat maxScale)
+{
+    MabaUpscaler* u = (MabaUpscaler*)(intptr_t)p;
+    if (!u) return MABA_DYN_START_RUNG;
+    MabaSetScaleRange(u, minScale, maxScale);
+    return u->rung;
 }
 
 /* Returns the rung; outFrame = {renderWidth, renderHeight, qualityShader}. */
@@ -52,11 +66,63 @@ JNIEXPORT jint JNICALL JNI(ctrlBeginFrame)(JNIEnv* env, jclass cls, jlong p, jfl
     return f.rung;
 }
 
+/* ---- MABA Frame Gen: the real slot policy and honest counters from maba_framegen.h ---- */
+
+JNIEXPORT jlong JNICALL JNI(fgCreate)(JNIEnv* env, jclass cls)
+{
+    MabaFrameGen* g = (MabaFrameGen*)malloc(sizeof(MabaFrameGen));
+    if (!g) return 0;
+    MabaFgInit(g);
+    return (jlong)(intptr_t)g;
+}
+
+JNIEXPORT void JNICALL JNI(fgDestroy)(JNIEnv* env, jclass cls, jlong p)
+{
+    free((void*)(intptr_t)p);
+}
+
+JNIEXPORT void JNICALL JNI(fgSetEnabled)(JNIEnv* env, jclass cls, jlong p, jint enabled)
+{
+    if (p) MabaFgSetEnabled((MabaFrameGen*)(intptr_t)p, enabled);
+}
+
+JNIEXPORT void JNICALL JNI(fgInvalidate)(JNIEnv* env, jclass cls, jlong p)
+{
+    if (p) MabaFgInvalidate((MabaFrameGen*)(intptr_t)p);
+}
+
+/* 0 = produce a real frame, 1 = produce a generated frame. */
+JNIEXPORT jint JNICALL JNI(fgNextSlot)(JNIEnv* env, jclass cls, jlong p)
+{
+    return p ? (jint)MabaFgNextSlot((MabaFrameGen*)(intptr_t)p) : 0;
+}
+
+/* Returns 1 when a one-second counting window just completed. */
+JNIEXPORT jint JNICALL JNI(fgPresented)(JNIEnv* env, jclass cls, jlong p, jint slot, jdouble nowMs)
+{
+    if (!p) return 0;
+    return MabaFgPresented((MabaFrameGen*)(intptr_t)p, (MabaFgSlot)slot, (double)nowMs);
+}
+
+/* out = {realFps, generatedFps, displayedFps}; returns 1 once a full window has completed. */
+JNIEXPORT jint JNICALL JNI(fgStats)(JNIEnv* env, jclass cls, jlong p, jfloatArray out)
+{
+    MabaFrameGen* g = (MabaFrameGen*)(intptr_t)p;
+    jfloat vals[3];
+    if (!g) return 0;
+    vals[0] = g->realFps;
+    vals[1] = g->generatedFps;
+    vals[2] = g->displayedFps;
+    (*env)->SetFloatArrayRegion(env, out, 0, 3, vals);
+    return g->statsValid;
+}
+
 /* ---- GPU timer (EXT_disjoint_timer_query) ---- */
 
 #define RING 3
 #define ZERO_FRAMES_UNUSABLE 8   /* begin == end this many times: timer is frame-granular */
 static GLuint qBegin[RING], qEnd[RING];
+static int queriesCreated;   /* the ring holds query objects that were generated and not yet deleted */
 static int timerFrame;
 static int timerSupported = -1;
 static float lastGpuMs;
@@ -71,10 +137,20 @@ JNIEXPORT jboolean JNICALL JNI(timerSupported)(JNIEnv* env, jclass cls)
     timerFrame = 0;
     lastGpuMs = 0.0f;
     zeroFrames = 0;
+    if (queriesCreated) {
+        /* Seen again after a surface re-creation: when the context survived, the old ring is still
+           alive and must be released, or it leaks. When the context was lost, its names mean
+           nothing here and glDeleteQueries ignores names that are not queries. */
+        GLuint old[RING * 2];
+        for (int i = 0; i < RING; i++) { old[i * 2] = qBegin[i]; old[i * 2 + 1] = qEnd[i]; }
+        glDeleteQueriesEXT(RING * 2, old);
+        queriesCreated = 0;
+    }
     if (timerSupported) {
         GLuint all[RING * 2];
         glGenQueriesEXT(RING * 2, all);
         for (int i = 0; i < RING; i++) { qBegin[i] = all[i * 2]; qEnd[i] = all[i * 2 + 1]; }
+        queriesCreated = 1;
     }
     return timerSupported ? JNI_TRUE : JNI_FALSE;
 }

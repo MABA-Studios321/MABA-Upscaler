@@ -1,8 +1,8 @@
 {
   "name": "com.maba.upscaler",
-  "version": "2.0.0",
-  "displayName": "MABA Upscaler",
-  "description": "Single-pass spatial upscaler for low-end mobile GPUs, with the optional MABA-Upscaler 2 (Temporal) resolve tier. Render lower, upscale sharper, hold your frame rate.",
+  "version": "2.0.0-pre.1",
+  "displayName": "MABA Upscaler (pre-alpha)",
+  "description": "PRE-ALPHA, never run in the Unity editor. Single-pass spatial upscaler, cheap enough for low-end mobile GPUs and not tied to a hardware class, with the optional MABA-Upscaler 2 (Temporal) resolve tier. Render lower, upscale sharper, hold your frame rate.",
   "unity": "2021.3",
   "dependencies": {},
   "keywords": [ "upscaler", "mobile", "performance", "resolution", "temporal" ],

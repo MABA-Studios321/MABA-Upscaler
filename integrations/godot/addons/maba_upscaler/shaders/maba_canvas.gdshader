@@ -156,7 +156,7 @@ vec3 maba_upscale(vec2 uv) {
 
 	float edgeG = clamp(aC / aW, mn, mx);
 	float bilG = mix(mix(f, g, pp.x), mix(j, k, pp.x), pp.y);
-	float gain = 1.0 + params.x * smoothstep(DARK_LO, DARK_HI, bilG);
+	float gain = 1.0 + 0.5 * params.x * smoothstep(DARK_LO, DARK_HI, bilG);   // MABA_QUALITY_GAIN 0.5
 	float outG = clamp(bilG + (edgeG - bilG) * gain, mn, mx);
 	float blend = clamp((contrast - EDGE_LO) * (1.0 / (EDGE_HI - EDGE_LO)), 0.0, 1.0);
 	return clamp(color + mix(bd, outG - bilG, blend), 0.0, 1.0);

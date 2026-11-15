@@ -27,6 +27,6 @@ float4 PSMain(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
     float4 b = MabaUpscaleQuality(t0, s0, uv, size, params);
     float4 c = MabaUpscaleFastNoGather(t0, s0, uv, size, params);
     float4 d = MabaTemporalResolve(t0, t1, t2, t3, s0, s1, pos.xy, invVP, prevVP,
-                                   tparams, texel, region);
+                                   tparams, texel, region, float2(0.25, -0.25));
     return a + b + c + d;
 }

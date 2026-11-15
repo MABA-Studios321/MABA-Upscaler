@@ -8,10 +8,13 @@
   Halton phase, and tells the renderer when the history must be reset.
 
   FRAME CONTRACT (see the shader header for the full uniform list)
-    1. Jitter the scene projection by (jitterX, jitterY) texels at RENDER resolution:
-         proj[2][0] += jitterX * 2.0f / renderWidth;    // column-major, GL-style
-         proj[2][1] += jitterY * 2.0f / renderHeight;
-       (For row-major matrices, transpose the indices. Keep the UI projection unjittered.)
+    1. Jitter the scene projection so the image content moves BY (jitterX, jitterY) texels at
+       RENDER resolution (a perspective projection, column-major, GL-style; clip.w = -z):
+         proj[2][0] -= jitterX * 2.0f / renderWidth;
+         proj[2][1] -= jitterY * 2.0f / renderHeight;
+       (For row-major matrices, transpose the indices; for an orthographic projection the
+       translation column m[3][0], m[3][1] is shifted by += instead. Keep the UI unjittered.)
+       Pass the same (jitterX, jitterY) to the resolve pass as uMabaJitter.
     2. Render scene color + depth at render resolution into the current ping-pong slot.
     3. Run maba_temporal.frag.glsl at render resolution:
          reads  current color, current depth, PREVIOUS resolve, PREVIOUS depth

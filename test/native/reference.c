@@ -217,7 +217,7 @@ static RGB maba_pixel(const Image* tex, int regionW, int regionH, int outW, int 
     float edgeG = clampf(aC / aW, mn, mx);
     float bilG = lerp(lerp(f, g, ppx), lerp(j, k, ppx), ppy);
     float t = clampf((bilG - DARK_LO) / (DARK_HI - DARK_LO), 0.0f, 1.0f);
-    float gain = 1.0f + sharpness * (t * t * (3.0f - 2.0f * t));
+    float gain = 1.0f + 0.5f * sharpness * (t * t * (3.0f - 2.0f * t));   /* MABA_QUALITY_GAIN 0.5 */
     float outG = clampf(bilG + (edgeG - bilG) * gain, mn, mx);
     float blend = clampf((contrast - EDGE_LO) * (1.0f / (EDGE_HI - EDGE_LO)), 0.0f, 1.0f);
     float delta = lerp(bd, outG - bilG, blend);

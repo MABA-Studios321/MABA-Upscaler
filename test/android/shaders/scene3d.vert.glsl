@@ -7,6 +7,15 @@ layout(location = 3) in float aMat;
 uniform highp mat4 uVP;
 uniform highp mat4 uModel;
 
+// MABA Frame Gen: the app compiles a variant with MABA_VELOCITY defined, which also outputs
+// this vertex's clip position in the previous real frame (previous camera AND previous model).
+#ifdef MABA_VELOCITY
+uniform highp mat4 uPrevVP;
+uniform highp mat4 uPrevModel;
+out highp vec4 vCurClip;
+out highp vec4 vPrevClip;
+#endif
+
 out highp vec3 vWorld;
 out mediump vec3 vNormal;
 out mediump vec2 vUV;
@@ -20,4 +29,8 @@ void main()
     vUV = aUV;
     vMat = aMat;
     gl_Position = uVP * w;
+#ifdef MABA_VELOCITY
+    vCurClip = gl_Position;
+    vPrevClip = uPrevVP * (uPrevModel * vec4(aPos, 1.0));
+#endif
 }

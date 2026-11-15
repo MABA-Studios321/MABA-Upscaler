@@ -39,14 +39,14 @@ public final class Scene3D {
     private static final int SHARDS = 7;
 
     private static final class Mesh {
-        int vbo, count;
+        int vbo, vao, count;
     }
 
     private final Mesh orb = new Mesh(), cage = new Mesh(), shard = new Mesh(), lamp = new Mesh(),
         spokes = new Mesh(), structure = new Mesh(), floor = new Mesh();
-    private final int[] vao = new int[1];
 
     public void init() {
+        resetCache();
         upload(orb, sphere(ORB_R, 48, 24, 0));
         upload(cage, buildCage(CAGE_R, 0.011f, 0.032f));
         upload(shard, buildShard());
@@ -56,7 +56,6 @@ public final class Scene3D {
         upload(spokes, buildSpokes(72, HALO_R));
         upload(structure, buildStructure());
         upload(floor, buildFloor(60f));
-        GLES30.glGenVertexArrays(1, vao, 0);
     }
 
     private static void upload(Mesh mesh, float[] data) {
@@ -69,6 +68,23 @@ public final class Scene3D {
         GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, data.length * 4, fb, GLES30.GL_STATIC_DRAW);
         mesh.vbo = buf[0];
         mesh.count = data.length / 9;
+
+        // One vertex array per mesh: the layout (pos, normal, uv, material; 36-byte stride) is set
+        // once here, so a draw only binds the array instead of re-specifying four attributes.
+        int[] va = new int[1];
+        GLES30.glGenVertexArrays(1, va, 0);
+        GLES30.glBindVertexArray(va[0]);
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, buf[0]);
+        GLES30.glEnableVertexAttribArray(0);
+        GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 36, 0);
+        GLES30.glEnableVertexAttribArray(1);
+        GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, 36, 12);
+        GLES30.glEnableVertexAttribArray(2);
+        GLES30.glVertexAttribPointer(2, 2, GLES30.GL_FLOAT, false, 36, 24);
+        GLES30.glEnableVertexAttribArray(3);
+        GLES30.glVertexAttribPointer(3, 1, GLES30.GL_FLOAT, false, 36, 32);
+        GLES30.glBindVertexArray(0);
+        mesh.vao = va[0];
     }
 
     /** Height of pillar i's octagonal shaft. Mirrored in scene3d.frag.glsl. */
@@ -401,59 +417,125 @@ public final class Scene3D {
     // Drawing
     // ------------------------------------------------------------------------------------
 
-    private void draw(Mesh mesh, int uModel, Mat4 model) {
-        GLES30.glUniformMatrix4fv(uModel, 1, false, model.m, 0);
-        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, mesh.vbo);
-        GLES30.glEnableVertexAttribArray(0);
-        GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 36, 0);
-        GLES30.glEnableVertexAttribArray(1);
-        GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, 36, 12);
-        GLES30.glEnableVertexAttribArray(2);
-        GLES30.glVertexAttribPointer(2, 2, GLES30.GL_FLOAT, false, 36, 24);
-        GLES30.glEnableVertexAttribArray(3);
-        GLES30.glVertexAttribPointer(3, 1, GLES30.GL_FLOAT, false, 36, 32);
-        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, mesh.count);
+    // Every object's model matrix at a given animation time, in draw order. Frame Gen asks for
+    // two times (this real frame and the previous one) so the shader can output exact
+    // per-pixel motion, camera AND object.
+    private static final int MODEL_COUNT = 2 + SHARDS + 1 + PILLARS + 2;
+    private final Mat4[] curModels = new Mat4[MODEL_COUNT];
+    private final Mat4[] prevModels = new Mat4[MODEL_COUNT];
+    // Scratch matrices: the per-frame matrix work allocates nothing.
+    private final Mat4 tCore = new Mat4(), tOrbit = new Mat4(), tA = new Mat4(), tB = new Mat4(), tC = new Mat4();
+    private Mesh[] drawOrder;
+
+    {
+        for (int i = 0; i < MODEL_COUNT; i++) {
+            curModels[i] = Mat4.identity();
+            prevModels[i] = Mat4.identity();
+        }
     }
 
-    /** Draw the whole scene. progScene must be in use; uVP set by the caller. */
-    public void draw(int progScene, float time) {
-        GLES30.glBindVertexArray(vao[0]);
-        int uModel = GLES30.glGetUniformLocation(progScene, "uModel");
+    private Mesh[] order() {
+        if (drawOrder == null) {
+            drawOrder = new Mesh[MODEL_COUNT];
+            int n = 0;
+            drawOrder[n++] = orb;
+            drawOrder[n++] = cage;
+            for (int i = 0; i < SHARDS; i++) drawOrder[n++] = shard;
+            drawOrder[n++] = spokes;
+            for (int i = 0; i < PILLARS; i++) drawOrder[n++] = lamp;
+            drawOrder[n++] = structure;
+            drawOrder[n++] = floor;
+        }
+        return drawOrder;
+    }
 
+    /** Fills m (draw order) for the given time, without allocating; returns the core's height. */
+    private float computeModels(float time, Mat4[] m) {
+        int n = 0;
         // The core floats and breathes; everything around it moves at its own pace.
         float bob = CORE_Y + 0.10f * (float) Math.sin(time * 0.8f);
-        Mat4 core = Mat4.translate(0, bob, 0);
-        // The orb as a sphere, for the shader's core light, soft shadow, AO and floor reflection.
-        GLES30.glUniform4f(GLES30.glGetUniformLocation(progScene, "uCore"), 0f, bob, 0f, ORB_R);
+        tCore.setTranslate(0, bob, 0);
 
-        draw(orb, uModel, Mat4.mul(core, Mat4.mul(Mat4.rotY(time * 0.5f), Mat4.rotX(0.4f))));
-        draw(cage, uModel, Mat4.mul(core, Mat4.mul(Mat4.rotY(time * 0.22f),
-            Mat4.mul(Mat4.rotX(0.55f + 0.15f * (float) Math.sin(time * 0.4f)), Mat4.rotZ(time * 0.09f)))));
+        // orb = core * rotY * rotX
+        tA.setRotY(time * 0.5f); tB.setRotX(0.4f); Mat4.mulInto(tA, tB, tC);
+        Mat4.mulInto(tCore, tC, m[n++]);
+        // cage = core * rotY * (rotX * rotZ)
+        tA.setRotX(0.55f + 0.15f * (float) Math.sin(time * 0.4f)); tB.setRotZ(time * 0.09f); Mat4.mulInto(tA, tB, tC);
+        tA.setRotY(time * 0.22f); Mat4.mulInto(tA, tC, tB);
+        Mat4.mulInto(tCore, tB, m[n++]);
 
         // Crystal shards on an inclined, slowly precessing orbit, each tumbling on its own.
-        Mat4 orbit = Mat4.mul(core, Mat4.mul(Mat4.rotY(time * 0.1f), Mat4.rotX(0.28f)));
+        tA.setRotY(time * 0.1f); tB.setRotX(0.28f); Mat4.mulInto(tA, tB, tC);
+        Mat4.mulInto(tCore, tC, tOrbit);
         for (int i = 0; i < SHARDS; i++) {
             float a = time * 0.42f + (float) (Math.PI * 2 * i / SHARDS);
             float r = 1.62f + 0.12f * (float) Math.sin(i * 2.3f);
             float h = 0.22f * (float) Math.sin(time * 0.9f + i * 1.7f);
-            Mat4 m = Mat4.mul(Mat4.translate((float) Math.cos(a) * r, h, (float) Math.sin(a) * r),
-                Mat4.mul(Mat4.rotY(-a + i), Mat4.mul(Mat4.rotZ(0.5f * (float) Math.sin(time * 0.7f + i)),
-                    Mat4.mul(Mat4.rotX(time * (0.6f + 0.1f * i) + i), Mat4.scale(0.8f + 0.08f * (i % 4))))));
-            draw(shard, uModel, Mat4.mul(orbit, m));
+            // orbit * T * rotY * rotZ * rotX * S, built right to left
+            tA.setRotX(time * (0.6f + 0.1f * i) + i); tB.setScale(0.8f + 0.08f * (i % 4)); Mat4.mulInto(tA, tB, tC);
+            tA.setRotZ(0.5f * (float) Math.sin(time * 0.7f + i)); Mat4.mulInto(tA, tC, tB);
+            tA.setRotY(-a + i); Mat4.mulInto(tA, tB, tC);
+            tA.setTranslate((float) Math.cos(a) * r, h, (float) Math.sin(a) * r); Mat4.mulInto(tA, tC, tB);
+            Mat4.mulInto(tOrbit, tB, m[n++]);
         }
 
-        draw(spokes, uModel, Mat4.mul(Mat4.translate(0, FLOOR_Y + 0.55f, 0), Mat4.rotY(-time * 0.22f)));
+        tA.setTranslate(0, FLOOR_Y + 0.55f, 0); tB.setRotY(-time * 0.22f);
+        Mat4.mulInto(tA, tB, m[n++]);
 
         // Floating lamp crystals above each pillar.
         for (int i = 0; i < PILLARS; i++) {
             float a = pillarAngle(i);
             float y = lampY(i) + 0.06f * (float) Math.sin(time * 1.3f + i);
-            draw(lamp, uModel, Mat4.mul(Mat4.translate((float) Math.cos(a) * PILLAR_R, y,
-                (float) Math.sin(a) * PILLAR_R), Mat4.rotY(time * 0.8f + i)));
+            tA.setTranslate((float) Math.cos(a) * PILLAR_R, y, (float) Math.sin(a) * PILLAR_R);
+            tB.setRotY(time * 0.8f + i);
+            Mat4.mulInto(tA, tB, m[n++]);
         }
 
-        Mat4 identity = Mat4.identity();
-        draw(structure, uModel, identity);
-        draw(floor, uModel, identity);
+        m[n++].setIdentity();   // structure
+        m[n].setIdentity();     // floor
+        return bob;
+    }
+
+    // Uniform locations, looked up once per program instead of every frame.
+    private int locProg = -1, locModel = -1, locPrevModel = -1, locCore = -1;
+    private void draw(Mesh mesh, int uModel, Mat4 model, int uPrevModel, Mat4 prevModel) {
+        GLES30.glUniformMatrix4fv(uModel, 1, false, model.m, 0);
+        if (prevModel != null) GLES30.glUniformMatrix4fv(uPrevModel, 1, false, prevModel.m, 0);
+        GLES30.glBindVertexArray(mesh.vao);
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, mesh.count);
+    }
+
+    /**
+     * Draw the whole scene at animation time `time`. prevTime is the animation time of the
+     * previous real frame (for motion vectors); pass a negative value when the program does not
+     * write motion vectors. progScene must be in use; uVP (and uPrevVP for the velocity variant)
+     * are set by the caller.
+     */
+    public void draw(int progScene, float time, float prevTime) {
+        if (progScene != locProg) {
+            locProg = progScene;
+            locModel = GLES30.glGetUniformLocation(progScene, "uModel");
+            locPrevModel = GLES30.glGetUniformLocation(progScene, "uPrevModel");
+            locCore = GLES30.glGetUniformLocation(progScene, "uCore");
+        }
+        float bob = computeModels(time, curModels);
+        boolean motion = locPrevModel >= 0;
+        if (motion) computeModels(prevTime < 0f ? time : prevTime, prevModels);
+        // The orb as a sphere, for the shader's core light, soft shadow, AO and floor reflection.
+        GLES30.glUniform4f(locCore, 0f, bob, 0f, ORB_R);
+
+        Mesh[] meshes = order();
+        for (int i = 0; i < MODEL_COUNT; i++) {
+            draw(meshes[i], locModel, curModels[i], locPrevModel, motion ? prevModels[i] : null);
+        }
+    }
+
+    public void draw(int progScene, float time) {
+        draw(progScene, time, -1f);
+    }
+
+    /** A new GL context means new program ids. */
+    public void resetCache() {
+        locProg = -1;
     }
 }

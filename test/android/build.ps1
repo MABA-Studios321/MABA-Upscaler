@@ -37,10 +37,12 @@ if (Test-Path $out) { Remove-Item -Recurse -Force $out }
 New-Item -ItemType Directory -Force "$out\assets", "$out\classes", "$out\dex" | Out-Null
 
 # Assets: the upscalers themselves and the test shaders.
-Copy-Item "$root\src\maba_upscaler.frag.glsl", "$root\src\maba_upscaler.vert.glsl", "$root\src\maba_temporal.frag.glsl" "$out\assets"
+Copy-Item "$root\src\maba_upscaler.frag.glsl", "$root\src\maba_upscaler.vert.glsl", "$root\src\maba_temporal.frag.glsl", "$root\src\maba_framegen.frag.glsl", "$root\src\maba_temporal_sr.frag.glsl" "$out\assets"
 Copy-Item "$here\shaders\*.glsl" "$out\assets"
 
-& "$bt\aapt2.exe" link -o "$out\unsigned.apk" -I $jar --manifest "$here\AndroidManifest.xml" -A "$out\assets"
+& "$bt\aapt2.exe" compile --dir "$here\res" -o "$out\res.zip"
+Check "aapt2 compile"
+& "$bt\aapt2.exe" link -o "$out\unsigned.apk" -I $jar --manifest "$here\AndroidManifest.xml" -A "$out\assets"  "$out\res.zip"
 Check "aapt2"
 
 # Native JNI bridge for arm64-v8a and armeabi-v7a.

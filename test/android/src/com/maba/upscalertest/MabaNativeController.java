@@ -15,12 +15,15 @@ public final class MabaNativeController implements DynController {
     public void setOutSize(int w, int h) { outW = w; outH = h; }
 
     @Override public void setMode(int mode) {
-        MabaNative.ctrlSetMode(ptr, mode);
-        rung = MabaController.modeRung(mode);
+        rung = MabaNative.ctrlSetMode(ptr, mode);
     }
 
     @Override public void setTargetFps(float fps) {
         MabaNative.ctrlSetTargetFps(ptr, fps);
+    }
+
+    @Override public void setScaleRange(float minScale, float maxScale) {
+        rung = MabaNative.ctrlSetScaleRange(ptr, minScale, maxScale);
     }
 
     @Override public void updateDynamic(float frameMs) {
@@ -29,7 +32,15 @@ public final class MabaNativeController implements DynController {
 
     @Override public int rung() { return rung; }
 
+    /** Frees the native controller. Safe to call more than once; the GC finaliser calls it too. */
+    public synchronized void release() {
+        if (ptr != 0) {
+            MabaNative.ctrlDestroy(ptr);
+            ptr = 0;
+        }
+    }
+
     @Override protected void finalize() {
-        if (ptr != 0) MabaNative.ctrlDestroy(ptr);
+        release();
     }
 }

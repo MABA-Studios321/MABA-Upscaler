@@ -24,6 +24,7 @@ function Read-Text($path) { [System.IO.File]::ReadAllText($path) }
 $frag = Read-Text (Join-Path $src "maba_upscaler.frag.glsl")
 $vert = Read-Text (Join-Path $src "maba_upscaler.vert.glsl")
 $temporal = Read-Text (Join-Path $src "maba_temporal.frag.glsl")
+$temporalSr = Read-Text (Join-Path $src "maba_temporal_sr.frag.glsl")
 
 # ---- GLSL: the core shaders --------------------------------------------------------------------
 # glslc cannot emit SPIR-V for "#version 300 es"; the ES 3.0 builds (MABA_GATHER 0, temporal) use
@@ -41,7 +42,12 @@ $variants = @(
     @{ Name = "vulkan-fast";        Stage = "frag"; Header = "#version 450`n#define MABA_VULKAN 1`n#define MABA_GATHER 1`n"; Env = "vulkan1.0"; Std = "450"; Body = $frag },
     @{ Name = "vulkan-quality";     Stage = "frag"; Header = "#version 450`n#define MABA_VULKAN 1`n#define MABA_GATHER 1`n#define MABA_QUALITY 1`n"; Env = "vulkan1.0"; Std = "450"; Body = $frag },
     @{ Name = "es-temporal";        Stage = "frag"; Header = "#version 310 es`n"; Env = "opengl"; Std = "310es"; Body = $temporal },
-    @{ Name = "vulkan-temporal";    Stage = "frag"; Header = "#version 450`n#define MABA_VULKAN 1`n"; Env = "vulkan1.0"; Std = "450"; Body = $temporal }
+    @{ Name = "vulkan-temporal";    Stage = "frag"; Header = "#version 450`n#define MABA_VULKAN 1`n"; Env = "vulkan1.0"; Std = "450"; Body = $temporal },
+    # Per-object motion vectors and the Catmull-Rom history resample (GL only).
+    @{ Name = "es-temporal-velocity"; Stage = "frag"; Header = "#version 310 es`n#define MABA_TEMPORAL_VELOCITY 1`n#define MABA_TEMPORAL_SHARP 1`n"; Env = "opengl"; Std = "310es"; Body = $temporal },
+    # Temporal super-resolution: accumulates at output resolution (resolve pass + present pass).
+    @{ Name = "es-temporal-sr";         Stage = "frag"; Header = "#version 310 es`n"; Env = "opengl"; Std = "310es"; Body = $temporalSr },
+    @{ Name = "es-temporal-sr-present"; Stage = "frag"; Header = "#version 310 es`n#define MABA_TSR_PRESENT 1`n"; Env = "opengl"; Std = "310es"; Body = $temporalSr }
 )
 
 # ---- GLSL: test-app shaders (GLES only) --------------------------------------------------------
@@ -56,18 +62,36 @@ foreach ($s in @(
                     Body = (Read-Text (Join-Path $appShaders $s.File)) }
 }
 
+# ---- GLSL: MABA Frame Gen (warp passes) and the scene variants that write motion vectors -------
+$framegen = Read-Text (Join-Path $src "maba_framegen.frag.glsl")
+$variants += @{ Name = "framegen"; Stage = "frag"; Header = "#version 310 es`n"; Env = "opengl"; Std = "310es"; Body = $framegen }
+# The developer / opt-in switches of the warp must keep compiling too.
+$variants += @(
+    @{ Name = "framegen-4taps";      Stage = "frag"; Header = "#version 310 es`n#define MABA_FG_PROBE_TAPS 4`n"; Env = "opengl"; Std = "310es"; Body = $framegen },
+    @{ Name = "framegen-scale-all";  Stage = "frag"; Header = "#version 310 es`n#define MABA_FG_SCALE_MASK 7`n"; Env = "opengl"; Std = "310es"; Body = $framegen },
+    @{ Name = "framegen-scale-none"; Stage = "frag"; Header = "#version 310 es`n#define MABA_FG_SCALE_MASK 0`n"; Env = "opengl"; Std = "310es"; Body = $framegen },
+    @{ Name = "framegen-noedge";     Stage = "frag"; Header = "#version 310 es`n#define MABA_FG_NOEDGE 1`n"; Env = "opengl"; Std = "310es"; Body = $framegen }
+)
+$variants += @(
+    @{ Name = "app-scene3d-vert-velocity"; Stage = "vert"; Header = "#version 310 es`n#define MABA_VELOCITY 1`n"; Env = "opengl"; Std = "310es"; Body = (Read-Text (Join-Path $root "test\android\shaders\scene3d.vert.glsl")) },
+    @{ Name = "app-scene3d-frag-velocity"; Stage = "frag"; Header = "#version 310 es`n#define MABA_VELOCITY 1`n"; Env = "opengl"; Std = "310es"; Body = (Read-Text (Join-Path $root "test\android\shaders\scene3d.frag.glsl")) },
+    @{ Name = "app-bg-velocity";           Stage = "frag"; Header = "#version 310 es`n#define MABA_VELOCITY 1`n"; Env = "opengl"; Std = "310es"; Body = (Read-Text (Join-Path $root "test\android\shaders\bg.frag.glsl")) }
+)
+
 # ---- GLSL: Godot RenderingDevice shaders (#[vertex] / #[fragment] sections) --------------------
 $godot = Join-Path $root "integrations\godot\addons\maba_upscaler\shaders"
 foreach ($g in @(
         @{ Name = "godot-upscaler-fast";    File = "maba_upscaler.glsl"; Quality = 0 },
         @{ Name = "godot-upscaler-quality"; File = "maba_upscaler.glsl"; Quality = 1 },
-        @{ Name = "godot-blit";             File = "maba_blit.glsl";     Quality = -1 })) {
+        @{ Name = "godot-blit";             File = "maba_blit.glsl";     Quality = -1 },
+@{ Name = "godot-temporal";         File = "maba_temporal.glsl"; Quality = -1 })) {
     $text = (Read-Text (Join-Path $godot $g.File)).Replace("`r`n", "`n")
     $vi = $text.IndexOf("#[vertex]"); $fi = $text.IndexOf("#[fragment]")
     $vs = $text.Substring($vi + 9, $fi - ($vi + 9)).Trim()
     $fs = $text.Substring($fi + 11).Trim()
-    # Same injection as maba_compositor_effect.gd does at runtime.
-    if ($g.Quality -ge 0) { $fs = $fs.Replace("#version 450", "#version 450`n#define MABA_QUALITY $($g.Quality)") }
+    # Godot replaces the VERSION_DEFINES token with the selected #[versions] entry at import time.
+    $def = if ($g.Quality -ge 0) { "#define MABA_QUALITY $($g.Quality)" } else { "" }
+    $fs = $fs.Replace("VERSION_DEFINES", $def)
     $variants += @{ Name = "$($g.Name)-vert"; Stage = "vert"; Header = ""; Env = "vulkan1.0"; Std = "450"; Body = $vs }
     $variants += @{ Name = "$($g.Name)-frag"; Stage = "frag"; Header = ""; Env = "vulkan1.0"; Std = "450"; Body = $fs }
 }
@@ -89,13 +113,18 @@ float4 NoGather(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target { r
 $hlslTemporal = @'
 #include "maba_temporal.hlsl"
 Texture2D A; Texture2D B; Texture2D C; Texture2D D; SamplerState L; SamplerState N;
-float4x4 I; float4x4 Pv; float4 TP; float4 Tx; float4 Rg;
-float4 Frag(float4 pos : SV_Position) : SV_Target { return MabaTemporalResolve(A, B, C, D, L, N, pos.xy, I, Pv, TP, Tx.xy, Rg.xy); }
+float4x4 I; float4x4 Pv; float4 TP; float4 Tx; float4 Rg; float4 Jt;
+float4 Frag(float4 pos : SV_Position) : SV_Target { return MabaTemporalResolve(A, B, C, D, L, N, pos.xy, I, Pv, TP, Tx.xy, Rg.xy, Jt.xy); }
 '@
 # Unreal's pixel shader with the engine include stubbed and the core include pointed at src/.
 $usf = (Read-Text (Join-Path $root "integrations\unreal\MabaUpscaler\Shaders\MabaUpscale.usf")).
     Replace('#include "/Engine/Public/Platform.ush"', '').
     Replace('#include "/Plugin/MabaUpscaler/MabaCore.ush"', '#include "maba_upscaler.hlsl"')
+$usfT = (Read-Text (Join-Path $root "integrations\unreal\MabaUpscaler\Shaders\MabaTemporal.usf")).
+    Replace('#include "/Engine/Public/Platform.ush"', '').
+    Replace('#include "/Plugin/MabaUpscaler/MabaTemporalCore.ush"', '#include "maba_temporal.hlsl"')
+# The temporal core the way Unreal configures it (reversed-Z, y down, [0,1] NDC z).
+$hlslTemporalUe = "#define MABA_VULKAN 1`n#define MABA_REVERSED_Z 1`n#define MABA_Y_DOWN 1`n" + $hlslTemporal
 # Unity's depth copy pass body (between HLSLPROGRAM and ENDHLSL, pragmas removed).
 $unityShaders = Join-Path $root "integrations\unity\com.maba.upscaler\Runtime\Resources\MabaShaders"
 $dc = (Read-Text (Join-Path $unityShaders "MabaDepthCopy.shader")).Replace("`r`n", "`n")
@@ -108,6 +137,8 @@ $variants += @(
     @{ Name = "hlsl-nogather";    Hlsl = $true; Entry = "NoGather"; Body = $hlslUpscaler },
     @{ Name = "hlsl-no-gather-1"; Hlsl = $true; Entry = "NoGather"; Body = $hlslNoGather },
     @{ Name = "hlsl-temporal";    Hlsl = $true; Entry = "Frag";     Body = $hlslTemporal },
+    @{ Name = "hlsl-temporal-ue"; Hlsl = $true; Entry = "Frag";     Body = $hlslTemporalUe },
+    @{ Name = "ue-temporal";      Hlsl = $true; Entry = "MainPS";   Body = $usfT },
     @{ Name = "ue-fast";          Hlsl = $true; Entry = "MainPS";   Body = "#define MABA_QUALITY 0`n" + $usf },
     @{ Name = "ue-quality";       Hlsl = $true; Entry = "MainPS";   Body = "#define MABA_QUALITY 1`n" + $usf },
     @{ Name = "unity-depthcopy";  Hlsl = $true; Entry = "Frag";     Body = $dcBody }

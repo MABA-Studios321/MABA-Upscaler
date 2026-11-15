@@ -1,0 +1,34 @@
+// MABA-Upscaler 2 (Temporal) - Unreal resolve pass. Runs at RENDER resolution, after tonemap,
+// before the MABA upscale pass. Copyright 2026 MABA Studios. SPDX-License-Identifier: Apache-2.0
+#include "/Engine/Public/Platform.ush"
+
+// Unreal: reversed-Z depth and matrices with [0,1] NDC z, screen rows run top to bottom.
+#define MABA_VULKAN 1
+#define MABA_REVERSED_Z 1
+#define MABA_Y_DOWN 1
+#include "/Plugin/MabaUpscaler/MabaTemporalCore.ush"
+
+Texture2D MabaCurrent;       // this frame's tonemapped colour (jittered)
+Texture2D MabaHistory;       // last frame's resolve
+Texture2D MabaDepth;         // this frame's scene depth (the engine's reversed-Z depth buffer)
+Texture2D MabaPrevDepth;     // last frame's depth, as written by this pass
+SamplerState MabaLinearSampler;
+SamplerState MabaPointSampler;
+float4x4 MabaInvViewProj;    // current clip -> previous clip, column-vector form (see C++)
+float4x4 MabaPrevViewProj;   // identity: the matrix above already lands in previous clip space
+float4 MabaTParams;          // x history weight, y depth tolerance, z reset, w clip gamma
+float4 MabaTexel;            // xy = 1 / allocated texture size
+float4 MabaRegion;           // xy = render size in texels
+float4 MabaJitter;           // xy = this frame's jitter in texels (content moved BY +jitter, y down)
+
+void MainPS(
+	float4 SvPosition : SV_POSITION,
+	out float4 OutColor : SV_Target0,
+	out float OutDepth : SV_Target1)
+{
+	OutColor = MabaTemporalResolve(MabaCurrent, MabaHistory, MabaDepth, MabaPrevDepth,
+		MabaLinearSampler, MabaPointSampler, SvPosition.xy,
+		MabaInvViewProj, MabaPrevViewProj, MabaTParams, MabaTexel.xy, MabaRegion.xy, MabaJitter.xy);
+	// This frame's depth becomes next frame's previous depth.
+	OutDepth = MabaDepth.Load(int3(int2(SvPosition.xy), 0)).r;
+}

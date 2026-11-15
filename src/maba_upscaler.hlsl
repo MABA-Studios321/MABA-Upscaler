@@ -21,6 +21,11 @@
 #ifndef MABA_DARK_HI
 #define MABA_DARK_HI 0.12
 #endif
+// Extra gain on the edge-reconstructed luma, as a fraction of the sharpness setting (see
+// maba_upscaler.frag.glsl for the measurement behind 0.5).
+#ifndef MABA_QUALITY_GAIN
+#define MABA_QUALITY_GAIN 0.5
+#endif
 #ifndef MABA_EDGE_LO
 #define MABA_EDGE_LO (10.0 / 255.0)
 #endif
@@ -196,7 +201,7 @@ float4 MabaUpscaleQuality(Texture2D tex, SamplerState samp, float2 uv, float4 si
 
     float edgeG = clamp(aC / aW, mn, mx);
     float bilG = lerp(lerp(f, g, pp.x), lerp(j, k, pp.x), pp.y);
-    float gain = 1.0 + params.x * smoothstep(MABA_DARK_LO, MABA_DARK_HI, bilG);
+    float gain = 1.0 + MABA_QUALITY_GAIN * params.x * smoothstep(MABA_DARK_LO, MABA_DARK_HI, bilG);
     float outG = clamp(bilG + (edgeG - bilG) * gain, mn, mx);
     float blend = saturate((contrast - MABA_EDGE_LO) * (1.0 / (MABA_EDGE_HI - MABA_EDGE_LO)));
     return float4(saturate(color + lerp(blockDelta, outG - bilG, blend)), 1.0);

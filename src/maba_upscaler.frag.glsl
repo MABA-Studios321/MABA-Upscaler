@@ -1,5 +1,5 @@
 //==============================================================================================
-// MABA Upscaler 2 - single-pass spatial upscaler for low-end mobile GPUs
+// MABA Upscaler 2 - single-pass spatial upscaler, cheap enough for low-end mobile GPUs
 //
 // Copyright 2026 MABA Studios (owner: Muhammad Affan Bin Adnan)
 // SPDX-License-Identifier: Apache-2.0
@@ -54,6 +54,15 @@
 #endif
 #ifndef MABA_EDGE_HI
 #define MABA_EDGE_HI (24.0 / 255.0)
+#endif
+
+// MABA_QUALITY only: how much of the sharpness setting is applied as extra gain on the edge-
+// reconstructed luma (1 = up to 2x the difference to bilinear at full sharpness). Measured on the
+// test phone against a 2x-supersampled reference (PSNR, 0.59 scale): gain 1.0 scored 22.13 dB,
+// 0.5 scored 22.27 dB and 0 scored 22.40 dB (the fast build and bilinear: 22.43 / 22.39), so the
+// default is 0.5: the kernel keeps its edge following, with half the overshoot.
+#ifndef MABA_QUALITY_GAIN
+#define MABA_QUALITY_GAIN 0.5
 #endif
 
 // Sharpening fades to zero below DARK_LO and reaches full strength at DARK_HI.
@@ -306,7 +315,7 @@ void main()
 
     // Amplify the difference from plain bilinear, fading the boost out in dark areas.
     float bilG = mix(mix(f, g, pp.x), mix(j, k, pp.x), pp.y);
-    float gain = 1.0 + uMabaParams.x * smoothstep(MABA_DARK_LO, MABA_DARK_HI, bilG);
+    float gain = 1.0 + MABA_QUALITY_GAIN * uMabaParams.x * smoothstep(MABA_DARK_LO, MABA_DARK_HI, bilG);
     float outG = clamp(bilG + (edgeG - bilG) * gain, mn, mx);
 
     // Fade from the 2x2 result to the kernel result as contrast rises, so there is no seam.

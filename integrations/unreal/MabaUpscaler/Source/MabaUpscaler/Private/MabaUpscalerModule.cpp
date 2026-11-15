@@ -4,6 +4,7 @@
 #include "MabaUpscalerModule.h"
 #include "MabaViewExtension.h"
 #include "MabaController.h"
+#include "MabaSettings.h"
 #include "HAL/IConsoleManager.h"
 #include "Containers/Ticker.h"
 #include "Engine/Engine.h"
@@ -26,10 +27,40 @@ namespace
 	TAutoConsoleVariable<float> CVarTargetFps(
 		TEXT("r.Maba.TargetFps"), 60.0f,
 		TEXT("Frame rate the Dynamic mode holds."));
+	TAutoConsoleVariable<bool> CVarTemporal(
+		TEXT("r.Maba.Temporal"), false,
+		TEXT("MABA-Upscaler 2 (Temporal): jittered accumulation with depth reprojection before the upscale. "
+			"SM5 / desktop-class renderers only; takes the view out of the engine TAA / TSR."));
+	TAutoConsoleVariable<float> CVarHistoryWeight(
+		TEXT("r.Maba.Temporal.HistoryWeight"), 0.9f,
+		TEXT("Temporal tier: how much of the previous frame is kept, 0.80..0.95. Higher is steadier and ghosts more."));
+	TAutoConsoleVariable<float> CVarClipGamma(
+		TEXT("r.Maba.Temporal.ClipGamma"), 1.25f,
+		TEXT("Temporal tier: width of the colour clamp around the current frame, 1.0..1.5. Lower rejects ghosts harder."));
+	TAutoConsoleVariable<float> CVarDepthTolerance(
+		TEXT("r.Maba.Temporal.DepthTolerance"), 0.01f,
+		TEXT("Temporal tier: relative depth difference that rejects history, 0.005..0.02."));
+	TAutoConsoleVariable<bool> CVarOverrideAA(
+		TEXT("r.Maba.OverrideAntiAliasing"), true,
+		TEXT("While MABA renders a view, take it out of the engine TAA / TSR (they would upscale before MABA). "
+			"Turn off only if you set r.AntiAliasingMethod yourself."));
+	TAutoConsoleVariable<bool> CVarShowStats(
+		TEXT("r.Maba.ShowStats"), false,
+		TEXT("Show MABA mode, render scale, fps and temporal state on screen."));
+	TAutoConsoleVariable<float> CVarMinScale(
+		TEXT("r.Maba.MinScale"), 0.35f,
+		TEXT("Dynamic mode never renders below this fraction of the output resolution (0.35..1)."));
+	TAutoConsoleVariable<float> CVarMaxScale(
+		TEXT("r.Maba.MaxScale"), 1.0f,
+		TEXT("Dynamic mode never renders above this fraction of the output resolution (0.35..1; 1 = native). "
+			"The fixed presets ignore the range."));
 
 	MabaUpscaler GController;
 	bool GControllerInit = false;
 	float GAppliedTargetFps = 0.0f;
+	float GAppliedMinScale = -1.0f;
+	float GAppliedMaxScale = -1.0f;
+	FMabaUpscalerModule::FStatus GStatus;
 	float GAppliedScreenPct = -1.0f;   // last value this plugin wrote to r.ScreenPercentage
 	bool GActive = false;              // true while this plugin owns r.ScreenPercentage
 	TSharedPtr<FMabaViewExtension, ESPMode::ThreadSafe> GViewExtension;
@@ -49,11 +80,43 @@ namespace
 		}
 	}
 
+	void ShowStats(float DeltaSeconds)
+	{
+		if (!GEngine || !CVarShowStats.GetValueOnGameThread())
+		{
+			return;
+		}
+		static float SmoothedMs = 16.7f;
+		SmoothedMs += (DeltaSeconds * 1000.0f - SmoothedMs) * 0.05f;
+		const TCHAR* ModeNames[] = { TEXT("Dynamic"), TEXT("Ultra Quality"), TEXT("Quality"), TEXT("Balanced"), TEXT("Performance") };
+		const TCHAR* TemporalText = !GStatus.bTemporalRequested ? TEXT("off")
+			: (FMabaViewExtension::bTemporalRanLastFrame ? TEXT("on") : TEXT("requested, not running"));
+		GEngine->AddOnScreenDebugMessage(static_cast<uint64>(0x4D414241), 0.0f, FColor::Cyan,
+			FString::Printf(TEXT("MABA %s | render %.0f%% %s | %.0f fps (%.1f ms) | temporal %s%s"),
+				ModeNames[FMath::Clamp(GStatus.Mode, 0, 4)], GStatus.Scale * 100.0f,
+				GStatus.bQualityShader ? TEXT("quality") : TEXT("fast"), 1000.0f / FMath::Max(SmoothedMs, 0.1f),
+				SmoothedMs, TemporalText, GStatus.bActive ? TEXT("") : TEXT(" | MABA disabled")));
+	}
+
 	void TickController(float DeltaSeconds)
 	{
+		// Project Settings -> Plugins -> MABA Upscaler is applied once; console variables set
+		// later (or on the command line) win over it.
+		static bool bAppliedSettings = false;
+		if (!bAppliedSettings)
+		{
+			bAppliedSettings = true;
+			if (const UMabaSettings* Settings = GetDefault<UMabaSettings>())
+			{
+				Settings->ApplyToConsoleVariables();
+			}
+		}
+
 		if (!CVarEnable.GetValueOnGameThread())
 		{
 			FMabaViewExtension::bEnabled = false;
+			GStatus.bActive = false;
+			ShowStats(DeltaSeconds);
 			if (GActive)
 			{
 				// Hand the resolution back: without the upscale pass a lowered screen
@@ -71,6 +134,16 @@ namespace
 			MabaInit(&GController, MABA_MODE_DYNAMIC, TargetFps);
 			GAppliedTargetFps = TargetFps;
 			GControllerInit = true;
+		}
+
+		// The scale range resets the controller's counters too: apply it only when it changed.
+		const float MinScale = FMath::Clamp(CVarMinScale.GetValueOnGameThread(), 0.35f, 1.0f);
+		const float MaxScale = FMath::Clamp(CVarMaxScale.GetValueOnGameThread(), 0.35f, 1.0f);
+		if (MinScale != GAppliedMinScale || MaxScale != GAppliedMaxScale)
+		{
+			MabaSetScaleRange(&GController, MinScale, MaxScale);
+			GAppliedMinScale = MinScale;
+			GAppliedMaxScale = MaxScale;
 		}
 
 		const int32 Mode = FMath::Clamp(CVarMode.GetValueOnGameThread(), 0, 4);
@@ -96,9 +169,24 @@ namespace
 
 		FMabaViewExtension::bQualityShader = MabaRungQuality(Rung) != 0;
 		FMabaViewExtension::Sharpness = FMath::Clamp(CVarSharpness.GetValueOnGameThread(), 0.0f, 1.0f);
+		FMabaViewExtension::bTemporal = CVarTemporal.GetValueOnGameThread();
+		FMabaViewExtension::bOverrideAntiAliasing = CVarOverrideAA.GetValueOnGameThread();
+		FMabaViewExtension::HistoryWeight = FMath::Clamp(CVarHistoryWeight.GetValueOnGameThread(), 0.5f, 0.98f);
+		FMabaViewExtension::ClipGamma = FMath::Clamp(CVarClipGamma.GetValueOnGameThread(), 0.5f, 3.0f);
+		FMabaViewExtension::DepthTolerance = FMath::Clamp(CVarDepthTolerance.GetValueOnGameThread(), 0.001f, 0.1f);
+		FMabaViewExtension::RenderScale = MabaRungScale(Rung);
 		FMabaViewExtension::bEnabled = true;
 		GActive = true;
 		SetScreenPercentage(MabaRungScale(Rung) * 100.0f);
+
+		GStatus.bActive = true;
+		GStatus.Mode = Mode;
+		GStatus.Rung = Rung;
+		GStatus.Scale = MabaRungScale(Rung);
+		GStatus.bQualityShader = MabaRungQuality(Rung) != 0;
+		GStatus.bTemporalRequested = FMabaViewExtension::bTemporal;
+		GStatus.bTemporalRunning = FMabaViewExtension::bTemporalRanLastFrame;
+		ShowStats(DeltaSeconds);
 	}
 
 	void RegisterViewExtension()
@@ -143,8 +231,21 @@ void FMabaUpscalerModule::ShutdownModule()
 	GTickerHandle.Reset();
 	FCoreDelegates::OnPostEngineInit.Remove(GPostEngineInitHandle);
 	GPostEngineInitHandle.Reset();
+	if (GActive)
+	{
+		// Do not leave the engine rendering at the last lowered screen percentage once the
+		// upscale pass that makes it look right is gone.
+		SetScreenPercentage(100.0f);
+		GActive = false;
+		GAppliedScreenPct = -1.0f;
+	}
 	FMabaViewExtension::bEnabled = false;
 	GViewExtension.Reset();
+}
+
+FMabaUpscalerModule::FStatus FMabaUpscalerModule::GetStatus()
+{
+	return GStatus;
 }
 
 IMPLEMENT_MODULE(FMabaUpscalerModule, MabaUpscaler)

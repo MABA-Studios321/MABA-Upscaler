@@ -26,6 +26,12 @@ in mediump vec2 vUV;
 flat in mediump float vMat;
 
 layout(location = 0) out vec4 oColor;
+#ifdef MABA_VELOCITY
+in highp vec4 vCurClip;
+in highp vec4 vPrevClip;
+uniform highp vec2 uJitter;   // this frame's projection jitter in NDC (0 when not jittered)
+layout(location = 1) out highp vec2 oVelocity;   // UV motion since the previous real frame
+#endif
 
 const float PI = 3.14159265;
 const vec3 ORANGE = vec3(1.0, 0.45, 0.08);
@@ -113,7 +119,8 @@ vec3 pointLight(vec3 P, vec3 N, vec3 V, vec3 pos, vec3 intensity, float range,
 {
     vec3 d = pos - P;
     float d2 = max(dot(d, d), 1e-6);
-    float w = clamp(1.0 - d2 / (range * range), 0.0, 1.0);
+    if (d2 >= range * range) return vec3(0.0);   // out of range: skip the BRDF entirely
+    float w = 1.0 - d2 / (range * range);
     return directLight(N, V, d * inversesqrt(d2), intensity * (w * w / (d2 + 0.1)), diffColor, f0, a);
 }
 
@@ -200,9 +207,11 @@ void main()
 
     float pulse = 0.85 + 0.15 * sin(uTime * 2.0);
     float coreI = 0.9 + 0.1 * sin(uTime * 7.0) * sin(uTime * 2.3);   // reactor flicker
-    vec2 pillarC;
-    float lampY;
-    nearestPillar(P.xz, pillarC, lampY);
+    // Only pixels near the pillar circle can see a lamp or a pillar ring (lamp range 3.5, rings
+    // and contact shadows within ~1.1 of a pillar); skip the atan for everything else.
+    vec2 pillarC = vec2(1e4);
+    float lampY = 0.0;
+    if (dot(P.xz, P.xz) > (PILLAR_R - 3.6) * (PILLAR_R - 3.6)) nearestPillar(P.xz, pillarC, lampY);
 
     // ---- Material ------------------------------------------------------------------------
     vec3 base = vec3(0.04);
@@ -377,4 +386,9 @@ void main()
     vec3 outc = pow(acesTonemap(col * 1.35), vec3(1.0 / 2.2));
     outc += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
     oColor = vec4(clamp(outc, 0.0, 1.0), 1.0);
+#ifdef MABA_VELOCITY
+    vec2 curN = vCurClip.xy / vCurClip.w;
+    vec2 prevN = vPrevClip.w > 1e-4 ? vPrevClip.xy / vPrevClip.w : curN;
+    oVelocity = ((curN - uJitter) - prevN) * 0.5;   // jitter-free motion
+#endif
 }

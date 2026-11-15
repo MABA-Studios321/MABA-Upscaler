@@ -9,4 +9,17 @@ class FMabaUpscalerModule : public IModuleInterface
 public:
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
+
+	/** What the plugin did on the last game-thread tick (read-only snapshot, game thread). */
+	struct FStatus
+	{
+		bool bActive = false;              // false when r.Maba.Enable is 0
+		int32 Mode = 0;                    // 0 Dynamic, 1 Ultra Quality, 2 Quality, 3 Balanced, 4 Performance
+		int32 Rung = 0;                    // -15 .. 51 on the 1% render-scale ladder (51 = native)
+		float Scale = 1.0f;                // render scale, 0.35 .. 1.0
+		bool bQualityShader = false;       // 12-tap kernel (true) or the fast kernel
+		bool bTemporalRequested = false;   // r.Maba.Temporal
+		bool bTemporalRunning = false;     // the resolve pass ran on the last frame
+	};
+	static FStatus GetStatus();
 };

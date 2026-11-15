@@ -16,6 +16,57 @@ public final class Mat4 {
         return r;
     }
 
+    // ---- Allocation-free setters, for per-frame work (no garbage on the render thread) ----
+
+    public Mat4 setIdentity() {
+        java.util.Arrays.fill(m, 0f);
+        m[0] = m[5] = m[10] = m[15] = 1f;
+        return this;
+    }
+
+    public Mat4 setTranslate(float x, float y, float z) {
+        setIdentity();
+        m[12] = x; m[13] = y; m[14] = z;
+        return this;
+    }
+
+    public Mat4 setScale(float s) {
+        setIdentity();
+        m[0] = m[5] = m[10] = s;
+        return this;
+    }
+
+    public Mat4 setRotX(float a) {
+        setIdentity();
+        float c = (float) Math.cos(a), s = (float) Math.sin(a);
+        m[5] = c; m[6] = s; m[9] = -s; m[10] = c;
+        return this;
+    }
+
+    public Mat4 setRotY(float a) {
+        setIdentity();
+        float c = (float) Math.cos(a), s = (float) Math.sin(a);
+        m[0] = c; m[2] = -s; m[8] = s; m[10] = c;
+        return this;
+    }
+
+    public Mat4 setRotZ(float a) {
+        setIdentity();
+        float c = (float) Math.cos(a), s = (float) Math.sin(a);
+        m[0] = c; m[1] = s; m[4] = -s; m[5] = c;
+        return this;
+    }
+
+    /** out = a * b. out must not be a or b. */
+    public static void mulInto(Mat4 a, Mat4 b, Mat4 out) {
+        float[] am = a.m, bm = b.m, r = out.m;
+        for (int c = 0; c < 4; c++)
+            for (int i = 0; i < 4; i++) {
+                r[c * 4 + i] = am[i] * bm[c * 4] + am[4 + i] * bm[c * 4 + 1]
+                    + am[8 + i] * bm[c * 4 + 2] + am[12 + i] * bm[c * 4 + 3];
+            }
+    }
+
     /** Uniform scale (keeps normals valid with mat3(model) in the vertex shader). */
     public static Mat4 scale(float s) {
         Mat4 r = identity();

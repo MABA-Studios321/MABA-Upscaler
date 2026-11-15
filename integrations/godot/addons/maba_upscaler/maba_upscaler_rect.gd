@@ -10,6 +10,10 @@ enum Mode { DYNAMIC, ULTRA_QUALITY, QUALITY, BALANCED, PERFORMANCE }
 @export var mode: Mode = Mode.DYNAMIC
 @export_range(0.0, 1.0) var sharpness: float = 0.5
 @export var target_fps: float = 60.0
+## Dynamic mode never renders below / above this fraction of the output resolution (1.0 = native).
+## The fixed presets ignore the range.
+@export_range(0.35, 1.0, 0.01) var min_scale: float = 0.35
+@export_range(0.35, 1.0, 0.01) var max_scale: float = 1.0
 ## The SubViewport that renders your 3D scene at reduced scale.
 @export var scene_viewport: SubViewport
 
@@ -17,6 +21,8 @@ var controller: MabaController
 var _mat: ShaderMaterial
 var _last_size: Vector2i
 var _applied_target_fps: float = 0.0
+var _applied_min_scale: float = -1.0
+var _applied_max_scale: float = -1.0
 var _bound_viewport: SubViewport
 var _last_ticks_usec: int = 0
 
@@ -24,6 +30,9 @@ var _last_ticks_usec: int = 0
 func _ready() -> void:
 	controller = MabaController.new(int(mode), target_fps)
 	_applied_target_fps = target_fps
+	_applied_min_scale = min_scale
+	_applied_max_scale = max_scale
+	controller.set_scale_range(min_scale, max_scale)
 	_mat = ShaderMaterial.new()
 	_mat.shader = load("res://addons/maba_upscaler/shaders/maba_canvas.gdshader")
 	material = _mat
@@ -63,10 +72,21 @@ func _process(_delta: float) -> void:
 	if target_fps != _applied_target_fps:
 		_applied_target_fps = target_fps
 		controller.set_target_fps(target_fps)
+	if min_scale != _applied_min_scale or max_scale != _applied_max_scale:
+		_applied_min_scale = min_scale
+		_applied_max_scale = max_scale
+		controller.set_scale_range(min_scale, max_scale)
 	if controller.mode != int(mode):
 		controller.set_mode(int(mode))
 	controller.begin_frame(frame_ms)
 	var s := controller.scale()
+	# At scale 1.00 there is nothing to upscale: show the viewport texture as it is (1:1) instead
+	# of running the shader over an image that is already at output size.
+	if controller.is_native():
+		if material != null:
+			material = null
+	elif material != _mat:
+		material = _mat
 	var rw := maxi(2, int(round(out.x * s)))
 	var rh := maxi(2, int(round(out.y * s)))
 	var want := Vector2i(rw, rh)

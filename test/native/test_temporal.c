@@ -75,6 +75,23 @@ static RGB fromYCoCg(RGB c)
     return o;
 }
 
+static float g_jx = 0.0f, g_jy = 0.0f;   /* this frame's jitter in texels (content moved BY +jitter) */
+
+/* CLAMP_TO_EDGE bilinear read of the current frame at texel-space position (x, y), pixel centres at +0.5. */
+static RGB sample_cur(float x, float y)
+{
+    float fx = clampf(x, 0.5f, W - 0.5f) - 0.5f, fy = clampf(y, 0.5f, H - 0.5f) - 0.5f;
+    int x0 = (int)floorf(fx), y0 = (int)floorf(fy);
+    float ax = fx - (float)x0, ay = fy - (float)y0;
+    int x1 = x0 + 1 > W - 1 ? W - 1 : x0 + 1, y1 = y0 + 1 > H - 1 ? H - 1 : y0 + 1;
+    RGB a = cur[y0 * W + x0], b = cur[y0 * W + x1], c = cur[y1 * W + x0], d = cur[y1 * W + x1];
+    RGB o;
+    o.r = (a.r * (1 - ax) + b.r * ax) * (1 - ay) + (c.r * (1 - ax) + d.r * ax) * ay;
+    o.g = (a.g * (1 - ax) + b.g * ax) * (1 - ay) + (c.g * (1 - ax) + d.g * ax) * ay;
+    o.b = (a.b * (1 - ax) + b.b * ax) * (1 - ay) + (c.b * (1 - ax) + d.b * ax) * ay;
+    return o;
+}
+
 static RGB sample_clamped(const RGB* img, float u, float v)
 {
     int x = (int)clampf(u * W - 0.5f, 0.0f, W - 1.0f);
@@ -92,7 +109,7 @@ static float sample_depth_clamped(const float* d, float u, float v)
 /* The resolve pass, line-for-line from the shader (GL depth convention). */
 static RGB resolve(int x, int y)
 {
-    RGB c = cur[y * W + x];
+    RGB c = sample_cur((float)x + 0.5f + g_jx, (float)y + 0.5f + g_jy);
     float d = depth[y * W + x];
     if (params[2] > 0.5f || d >= 1.0f || d <= 0.0f) return c;
 
@@ -144,7 +161,7 @@ static RGB resolve(int x, int y)
     float dispX = (pu - (x + 0.5f) / W) * W;
     float dispY = (pv - (y + 0.5f) / H) * H;
     float disp = sqrtf(dispX * dispX + dispY * dispY);
-    float w = params[0] / (1.0f + 0.05f * disp);
+    float w = params[0] / (1.0f + 4.0f * disp);   /* MABA_TEMPORAL_MOTION_K */
 
     RGB cy = toYCoCg(c);
     RGB mixv = {cy.r + (h.r - cy.r) * w, cy.g + (h.g - cy.g) * w, cy.b + (h.b - cy.b) * w};
@@ -288,6 +305,35 @@ static void test_motion_falloff(void)
            moving < still ? "ok" : "FAILED");
 }
 
+static void test_unjitter(void)
+{
+    /* A smooth gradient seen through a jittered projection is shifted BY +jitter texels. After the
+     * resolve (reset frame, so only the current-frame path) every pixel must show the UNJITTERED
+     * gradient again. Without the compensation the error is the jitter itself. */
+    int x, y, bad = 0;
+    float worst = 0.0f, jx = 0.35f, jy = -0.2f;
+    setup_camera(0.0f);
+    for (y = 0; y < H; y++) for (x = 0; x < W; x++) {
+        float v = ((float)x + 0.5f - jx) / W + 0.5f * (((float)y + 0.5f - jy) / H);   /* content moved BY +j */
+        cur[y * W + x].r = v; cur[y * W + x].g = v; cur[y * W + x].b = v;
+        depth[y * W + x] = 0.5f; prevDepth[y * W + x] = 0.5f;
+    }
+    fill_flat(hist, 0.9f);
+    params[2] = 1.0f;
+    g_jx = jx; g_jy = jy;
+    for (y = 1; y < H - 1; y++) for (x = 1; x < W - 1; x++) {
+        float want = ((float)x + 0.5f) / W + 0.5f * (((float)y + 0.5f) / H);
+        float e = fabsf(resolve(x, y).r - want);
+        if (e > worst) worst = e;
+        if (e > 2e-3f) bad++;
+    }
+    g_jx = 0.0f; g_jy = 0.0f;
+    params[2] = 0.0f;
+    CHECK(bad == 0);
+    printf("un-jitter (shifted content is brought back onto the pixel grid, worst error %.5f): %s\n",
+           worst, bad ? "FAILED" : "ok");
+}
+
 static void test_ycocg_roundtrip(void)
 {
     int i, bad = 0;
@@ -349,6 +395,7 @@ int main(void)
     test_ghost_bound();
     test_convergence();
     test_motion_falloff();
+    test_unjitter();
     test_ycocg_roundtrip();
     test_jitter_header();
     if (g_failures == 0) printf("ALL TEMPORAL TESTS PASSED\n");
